@@ -9,13 +9,35 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+read_env_value() {
+  local key="$1"
+  sed -n "s/^${key}=//p" .env | tail -n 1 | tr -d '\r'
+}
+
+backup_dir="${GITLAB_BACKUP_DIR:-$(read_env_value GITLAB_BACKUP_DIR)}"
+backup_dir="${backup_dir:-${HOME}/DevTools/Backup/gitlab-docker}"
+case "$backup_dir" in
+  "\${HOME}/"*)
+    backup_dir="${HOME}/${backup_dir:8}"
+    ;;
+  "\$HOME/"*)
+    backup_dir="${HOME}/${backup_dir:6}"
+    ;;
+  /*)
+    ;;
+  *)
+    backup_dir="$root_dir/$backup_dir"
+    ;;
+esac
+
 if ! docker compose ps --status running --services | grep -qx gitlab; then
   echo "GitLab is not running." >&2
   exit 1
 fi
 
-mkdir -p backups
-chmod 700 backups
+mkdir -p "$backup_dir"
+chmod 700 "$backup_dir"
+backup_dir="$(cd "$backup_dir" && pwd -P)"
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
 staging_dir="$(mktemp -d)"
@@ -35,12 +57,12 @@ if [[ -f "$caddy_root_ca_path" ]]; then
   cp "$caddy_root_ca_path" "$staging_dir/caddy-local-root.crt"
 fi
 
-config_archive="backups/config-${timestamp}.tgz"
+config_archive="$backup_dir/config-${timestamp}.tgz"
 tar -C "$staging_dir" -czf "$config_archive" .
 chmod 600 "$config_archive"
 
 application_backup=""
-for candidate in backups/*_gitlab_backup.tar; do
+for candidate in "$backup_dir"/*_gitlab_backup.tar; do
   [[ -f "$candidate" ]] || continue
   if [[ -z "$application_backup" || "$candidate" -nt "$application_backup" ]]; then
     application_backup="$candidate"
@@ -55,7 +77,7 @@ application_backup_name="$(basename "$application_backup")"
 docker compose exec -T gitlab chown "$(id -u):$(id -g)" \
   "/var/opt/gitlab/backups/${application_backup_name}"
 
-checksum_file="backups/checksums-${timestamp}.sha256"
+checksum_file="$backup_dir/checksums-${timestamp}.sha256"
 shasum -a 256 "$application_backup" "$config_archive" > "$checksum_file"
 chmod 600 "$application_backup" "$checksum_file"
 
