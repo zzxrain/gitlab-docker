@@ -1,5 +1,4 @@
 .env
 .DS_Store
-secrets/ssl/*.crt
-secrets/ssl/*.key
+secrets/
 backups/

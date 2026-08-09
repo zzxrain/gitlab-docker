@@ -25,7 +25,15 @@ docker compose exec -T gitlab gitlab-backup create
 docker compose cp gitlab:/etc/gitlab/gitlab-secrets.json "$staging_dir/gitlab-secrets.json"
 docker compose cp gitlab:/etc/gitlab/gitlab.rb "$staging_dir/gitlab.rb"
 cp .env docker-compose.yml "$staging_dir/"
-cp -R secrets/ssl "$staging_dir/ssl"
+
+caddy_root_ca_path="$(sed -n 's/^CADDY_ROOT_CA_PATH=//p' .env | tail -n 1 | tr -d '\r')"
+caddy_root_ca_path="${caddy_root_ca_path:-../jenkins-docker/certs/caddy-local-root.crt}"
+if [[ "$caddy_root_ca_path" != /* ]]; then
+  caddy_root_ca_path="$root_dir/$caddy_root_ca_path"
+fi
+if [[ -f "$caddy_root_ca_path" ]]; then
+  cp "$caddy_root_ca_path" "$staging_dir/caddy-local-root.crt"
+fi
 
 config_archive="backups/config-${timestamp}.tgz"
 tar -C "$staging_dir" -czf "$config_archive" .
