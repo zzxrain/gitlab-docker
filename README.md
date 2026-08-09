@@ -248,6 +248,10 @@ git clone ssh://git@apps.localmac.net:2222/group/project.git
 
 ## 6. Daily Operations
 
+GitLab and the optional Runner use a manual restart policy. They do not start
+automatically when Docker or OrbStack starts; start them only when the lab is
+needed.
+
 Start GitLab without the optional runner:
 
 ```bash
@@ -268,13 +272,19 @@ docker compose logs --tail=200 gitlab
 docker compose exec gitlab gitlab-ctl status
 ```
 
-Stop all services while preserving data:
+Stop all services while preserving their containers and data:
+
+```bash
+docker compose --profile runner stop
+```
+
+Remove the stopped service containers while preserving their data when needed:
 
 ```bash
 docker compose --profile runner down
 ```
 
-This does not stop the shared Jenkins Caddy service. Do not add `--volumes` unless the installation is being permanently destroyed. Named volumes contain GitLab configuration, repositories, database data, logs, and runner configuration.
+Neither command stops the shared Jenkins Caddy service. Do not add `--volumes` unless the installation is being permanently destroyed. Named volumes contain GitLab configuration, repositories, database data, logs, and runner configuration.
 
 ---
 
