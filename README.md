@@ -26,7 +26,9 @@ This project is designed for internal development, testing, and learning on macO
 * Container health checks
 * Optional GitLab Runner with the Docker executor
 * Application and configuration backup helper
-* Explicit `linux/amd64` compatibility for OrbStack on Apple Silicon
+* Native multi-architecture images for Apple Silicon and x86-64 hosts
+* Local-only port binding by default
+* Bounded Docker stdout/stderr log retention
 * Version pinning and a controlled upgrade workflow
 
 ---
@@ -36,7 +38,7 @@ This project is designed for internal development, testing, and learning on macO
 ```text
 Browser / Git client
     |
-    | HTTPS 443 / SSH 2222
+    | HTTPS 8445 / SSH 2222
     v
 GitLab CE (Omnibus)
     |
@@ -56,7 +58,7 @@ Optional GitLab Runner
     |
     +-- Docker executor
     +-- runner-config volume
-    +-- /var/run/docker.sock
+    +-- /var/run/docker.sock (Runner daemon only)
 ```
 
 GitLab Omnibus owns the application and its supporting services inside one persistent server container. This resembles a small enterprise installation while intentionally avoiding an external database, object storage, load balancer, or Kubernetes.
@@ -71,7 +73,7 @@ GitLab Community Edition is recommended for this permanent personal lab. CE is f
 
 The GitLab EE image can run without a paid license and exposes the Free tier, but it does not add a required capability for this project. A future migration to EE should follow GitLab's supported CE-to-EE procedure and change the image only at a supported version boundary.
 
-The server version is pinned in `.env` rather than using `latest`. Pinning makes deployments reproducible and upgrades deliberate. Always review the current GitLab release notes and required upgrade stops before changing the version.
+The server version is pinned in `.env` rather than using `latest`. Pinning makes deployments reproducible and upgrades deliberate. The committed default is GitLab `19.2.1-ce.0`; always review the current maintenance policy, release notes, and required upgrade stops before changing it.
 
 ---
 
@@ -120,11 +122,11 @@ Check that the default ports are available:
 
 ```bash
 lsof -nP -iTCP:80 -sTCP:LISTEN || true
-lsof -nP -iTCP:443 -sTCP:LISTEN || true
+lsof -nP -iTCP:8445 -sTCP:LISTEN || true
 lsof -nP -iTCP:2222 -sTCP:LISTEN || true
 ```
 
-GitLab's server image is published for `linux/amd64`. The Compose file explicitly selects that platform, so an Apple Silicon Mac runs it through OrbStack emulation. The first start can be slow, and its performance should not be treated as production performance.
+The pinned GitLab and Runner images publish both `linux/arm64` and `linux/amd64` variants. Compose does not force a platform, so Docker selects the native image for an Apple Silicon or x86-64 host. The first start can still be slow because GitLab must initialize and configure all bundled services.
 
 ---
 
@@ -141,29 +143,32 @@ cp .env.example .env
 Default configuration:
 
 ```env
-GITLAB_VERSION=18.3.6-ce.0
-GITLAB_HOSTNAME=gitlab.local
-GITLAB_HTTPS_PORT=443
+GITLAB_VERSION=19.2.1-ce.0
+GITLAB_HOSTNAME=apps.localmac.net
+GITLAB_BIND_ADDRESS=127.0.0.1
+GITLAB_HTTPS_PORT=8445
 GITLAB_SSH_PORT=2222
-GITLAB_TIMEZONE=UTC
-GITLAB_RUNNER_VERSION=alpine-v18.3.1
+GITLAB_TIMEZONE=Asia/Shanghai
+GITLAB_RUNNER_VERSION=alpine-v19.2.1
+DOCKER_LOG_MAX_SIZE=50m
+DOCKER_LOG_MAX_FILES=5
 ```
 
-Keep `GITLAB_HTTPS_PORT` at `443` for the simplest URL. If the port conflicts with another local service, update it in `.env` and include the new port in the browser URL.
+The default browser URL is `https://apps.localmac.net:8445`. `GITLAB_BIND_ADDRESS=127.0.0.1` prevents access from other devices on the local network. Change the bind address deliberately only when LAN access is required and protected by an appropriate firewall.
 
 ### 5.2 Configure local name resolution
 
 Check first, then add the entry only if it is missing:
 
 ```bash
-grep -E '^[[:space:]]*127\.0\.0\.1[[:space:]]+.*gitlab\.local([[:space:]]|$)' /etc/hosts \
-  || echo '127.0.0.1 gitlab.local' | sudo tee -a /etc/hosts
+grep -E '^[[:space:]]*127\.0\.0\.1[[:space:]]+.*apps\.localmac\.net([[:space:]]|$)' /etc/hosts \
+  || echo '127.0.0.1 apps.localmac.net' | sudo tee -a /etc/hosts
 ```
 
 Verify resolution:
 
 ```bash
-ping -c 1 gitlab.local
+ping -c 1 apps.localmac.net
 ```
 
 If `GITLAB_HOSTNAME` is changed, use the same hostname in `/etc/hosts` and regenerate the certificate.
@@ -176,12 +181,14 @@ Generate a self-signed certificate for the local lab:
 ./scripts/generate-certificate.sh
 ```
 
+The script refuses to overwrite an existing certificate or key. Move or remove disposable generated files explicitly before regenerating them; never overwrite an organization-issued key by accident.
+
 Trust it in the macOS system keychain:
 
 ```bash
 sudo security add-trusted-cert -d -r trustRoot \
   -k /Library/Keychains/System.keychain \
-  secrets/ssl/gitlab.local.crt
+  secrets/ssl/apps.localmac.net.crt
 ```
 
 For shared internal use, replace the generated certificate and key with files issued by the organization's certificate authority. Their basename must match `GITLAB_HOSTNAME`, for example:
@@ -218,12 +225,12 @@ Retrieve the one-time root password. GitLab removes this file after 24 hours:
 docker compose exec gitlab cat /etc/gitlab/initial_root_password
 ```
 
-Open [https://gitlab.local](https://gitlab.local), sign in as `root`, and immediately change the password. Create a separate non-root administrator account for routine administration.
+Open [https://apps.localmac.net:8445](https://apps.localmac.net:8445), sign in as `root`, and immediately change the password. Create a separate non-root administrator account for routine administration.
 
 SSH clone URLs use port `2222` by default:
 
 ```bash
-git clone ssh://git@gitlab.local:2222/group/project.git
+git clone ssh://git@apps.localmac.net:2222/group/project.git
 ```
 
 ---
@@ -265,19 +272,19 @@ Do not add `--volumes` unless the installation is being permanently destroyed. N
 Check the HTTPS endpoint:
 
 ```bash
-curl --fail --show-error --head https://gitlab.local/users/sign_in
+curl --fail --show-error --head https://apps.localmac.net:8445/users/sign_in
 ```
 
 Inspect the certificate when troubleshooting trust or hostname problems:
 
 ```bash
-openssl s_client -connect gitlab.local:443 -servername gitlab.local </dev/null
+openssl s_client -connect apps.localmac.net:8445 -servername apps.localmac.net </dev/null
 ```
 
 Check the SSH endpoint:
 
 ```bash
-ssh -T -p 2222 git@gitlab.local
+ssh -T -p 2222 git@apps.localmac.net
 ```
 
 An unauthenticated SSH check may report that access is denied. That is expected until a public key is added to the GitLab user profile.
@@ -291,13 +298,13 @@ Create a project or group runner in GitLab under **Settings > CI/CD > Runners**,
 Register and start the runner:
 
 ```bash
-./scripts/register-runner.sh 'glrt-REPLACE_ME'
+./scripts/register-runner.sh
 docker compose --profile runner ps
 ```
 
-The registration is persisted in the `runner-config` volume. Do not store runner tokens in `.env`, Compose YAML, Git, shell history, or CI job output.
+The script prompts for the token without echoing it, which keeps it out of shell history. Registration is persisted in the `runner-config` volume. Do not store runner tokens in `.env`, Compose YAML, Git, or CI job output.
 
-The runner uses the Docker socket to create job containers. Docker socket access is effectively root-equivalent on the host. Use this runner only for trusted lab projects. A production environment should use isolated runner hosts, protected runners, restricted tags, and no shared server socket.
+The Runner daemon uses the Docker socket to create job containers, but the socket is not mounted into job containers by default. Docker socket access remains effectively root-equivalent for the Runner daemon itself. Use it only for trusted lab projects. Jobs that must build container images should use a separate protected runner and an isolated builder such as rootless BuildKit or carefully secured Docker-in-Docker.
 
 ### 8.1 Minimal pipeline example
 
@@ -324,7 +331,7 @@ GitLab's built-in Prometheus monitoring is enabled by the Omnibus configuration.
 
 ```bash
 docker compose ps
-docker inspect --format '{{json .State.Health}}' gitlab-lab-gitlab-1
+docker inspect --format '{{json .State.Health}}' "$(docker compose ps -q gitlab)"
 docker compose exec gitlab gitlab-rake gitlab:check SANITIZE=true
 docker compose exec gitlab gitlab-rake gitlab:doctor:secrets
 ```
@@ -336,6 +343,8 @@ docker compose ps --format json
 ```
 
 For a long-lived shared installation, export metrics and logs to external monitoring instead of relying only on data inside the GitLab container.
+
+Compose also rotates each container's Docker `json-file` output at 50 MB and keeps five files by default. Adjust `DOCKER_LOG_MAX_SIZE` and `DOCKER_LOG_MAX_FILES` in `.env` when required. This is independent of GitLab's internal log rotation under `/var/log/gitlab`.
 
 ---
 
@@ -352,9 +361,10 @@ Run a backup before every upgrade:
 The script creates:
 
 * A GitLab application backup in `./backups`
-* A timestamped archive containing `gitlab-secrets.json` and `gitlab.rb`
+* A timestamped configuration archive containing `gitlab-secrets.json`, `gitlab.rb`, `.env`, `docker-compose.yml`, and TLS files
+* A SHA-256 checksum file covering the application and configuration backups
 
-The secrets file is mandatory for decrypting stored credentials. Back up `.env` and the TLS files separately and securely. Copy all backups off the laptop; a backup stored only beside the running system is not a disaster recovery plan.
+The secrets file is mandatory for decrypting stored credentials. Configuration archives contain private material and are created with restrictive permissions. Copy the backups and checksum file to encrypted off-host storage; a backup stored only beside the running system is not a disaster recovery plan.
 
 ### 10.2 Restore GitLab
 
@@ -465,7 +475,7 @@ docker compose config --quiet
 docker compose ps
 docker compose exec gitlab gitlab-ctl status
 docker compose exec gitlab gitlab-rake gitlab:check SANITIZE=true
-curl --fail --show-error --head https://gitlab.local/users/sign_in
+curl --fail --show-error --head https://apps.localmac.net:8445/users/sign_in
 ```
 
 Also verify manually:
@@ -484,7 +494,7 @@ Also verify manually:
 
 ### GitLab remains unhealthy during first start
 
-The first Omnibus configuration can take several minutes, especially under `amd64` emulation on Apple Silicon.
+The first Omnibus configuration can take several minutes while GitLab initializes all bundled services.
 
 ```bash
 docker compose logs --tail=300 gitlab
@@ -501,7 +511,7 @@ Confirm that the configured hostname matches the certificate basename and subjec
 ```bash
 grep '^GITLAB_HOSTNAME=' .env
 ls -l secrets/ssl
-openssl x509 -in secrets/ssl/gitlab.local.crt -noout -subject -ext subjectAltName
+openssl x509 -in secrets/ssl/apps.localmac.net.crt -noout -subject -ext subjectAltName
 ```
 
 Regenerate the certificate after changing the hostname, then recreate GitLab:
@@ -515,7 +525,7 @@ docker compose up -d --no-deps --force-recreate gitlab
 
 ```bash
 lsof -nP -iTCP:80 -sTCP:LISTEN
-lsof -nP -iTCP:443 -sTCP:LISTEN
+lsof -nP -iTCP:8445 -sTCP:LISTEN
 lsof -nP -iTCP:2222 -sTCP:LISTEN
 ```
 
@@ -538,7 +548,7 @@ docker compose exec runner ls -l /var/run/docker.sock
 docker compose exec runner gitlab-runner list
 ```
 
-Confirm that the Docker socket exists in the host runtime. Remember that exposing this socket gives jobs powerful host access; do not weaken its permissions as a shortcut.
+Confirm that the Docker socket exists in the host runtime for the Runner daemon. It is intentionally absent from ordinary job containers. Use a separate protected image-building runner instead of weakening socket permissions or adding the socket to every job.
 
 ---
 
