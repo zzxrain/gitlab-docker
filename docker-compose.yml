@@ -1,4 +1,4 @@
-name: gitlab-lab
+name: gitlab-docker
 
 x-logging: &default-logging
   driver: json-file
