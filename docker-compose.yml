@@ -19,21 +19,19 @@ services:
       GITLAB_OMNIBUS_CONFIG: |
         external_url 'https://${GITLAB_HOSTNAME:-apps.localmac.net}:${GITLAB_HTTPS_PORT:-8445}'
         gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_SSH_PORT:-2222}
-        nginx['redirect_http_to_https'] = true
-        nginx['ssl_certificate'] = '/etc/gitlab/ssl/${GITLAB_HOSTNAME:-apps.localmac.net}.crt'
-        nginx['ssl_certificate_key'] = '/etc/gitlab/ssl/${GITLAB_HOSTNAME:-apps.localmac.net}.key'
+        nginx['listen_https'] = false
+        nginx['listen_port'] = 80
         letsencrypt['enable'] = false
         gitlab_rails['backup_keep_time'] = 604800
         prometheus_monitoring['enable'] = true
+    expose:
+      - "80"
     ports:
-      - "${GITLAB_BIND_ADDRESS:-127.0.0.1}:80:80"
-      - "${GITLAB_BIND_ADDRESS:-127.0.0.1}:${GITLAB_HTTPS_PORT:-8445}:${GITLAB_HTTPS_PORT:-8445}"
       - "${GITLAB_BIND_ADDRESS:-127.0.0.1}:${GITLAB_SSH_PORT:-2222}:22"
     volumes:
       - gitlab-config:/etc/gitlab
       - gitlab-logs:/var/log/gitlab
       - gitlab-data:/var/opt/gitlab
-      - ./secrets/ssl:/etc/gitlab/ssl:ro
       - ./backups:/var/opt/gitlab/backups
     healthcheck:
       test: ["CMD", "/opt/gitlab/bin/gitlab-healthcheck", "--fail", "--max-time", "10"]
@@ -43,8 +41,9 @@ services:
       start_period: 10m
     networks:
       gitlab:
+      tooling-edge:
         aliases:
-          - ${GITLAB_HOSTNAME:-apps.localmac.net}
+          - gitlab
 
   runner:
     image: gitlab/gitlab-runner:${GITLAB_RUNNER_VERSION:-alpine-v19.2.1}
@@ -57,14 +56,18 @@ services:
     volumes:
       - runner-config:/etc/gitlab-runner
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./secrets/ssl/${GITLAB_HOSTNAME:-apps.localmac.net}.crt:/etc/gitlab-runner/certs/${GITLAB_HOSTNAME:-apps.localmac.net}.crt:ro
+      - ${CADDY_ROOT_CA_PATH:-../jenkins-docker/certs/caddy-local-root.crt}:/etc/gitlab-runner/certs/${GITLAB_HOSTNAME:-apps.localmac.net}.crt:ro
     networks:
       - gitlab
+      - tooling-edge
     profiles: ["runner"]
 
 networks:
   gitlab:
     driver: bridge
+  tooling-edge:
+    external: true
+    name: ${TOOLING_EDGE_NETWORK:-local-tooling-edge}
 
 volumes:
   gitlab-config:

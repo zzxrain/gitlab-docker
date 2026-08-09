@@ -19,7 +19,7 @@ This project is designed for internal development, testing, and learning on macO
 ## Features
 
 * Pinned GitLab Community Edition image
-* HTTPS with a locally generated or organization-issued certificate
+* HTTPS through the shared Jenkins Caddy ingress and local CA
 * Git over SSH on a dedicated host port
 * Persistent GitLab configuration, logs, application data, and runner state
 * Built-in Prometheus monitoring
@@ -38,9 +38,13 @@ This project is designed for internal development, testing, and learning on macO
 ```text
 Browser / Git client
     |
-    | HTTPS 8445 / SSH 2222
+    | HTTPS 8445
     v
-GitLab CE (Omnibus)
+Jenkins Caddy
+    |
+    | HTTP 80 over local-tooling-edge
+    v
+GitLab CE (Omnibus) <--- SSH 2222 --- Git client
     |
     +-- NGINX
     +-- Puma and Sidekiq
@@ -58,12 +62,15 @@ Optional GitLab Runner
     |
     +-- Docker executor
     +-- runner-config volume
+    +-- Caddy local root CA (trust only)
     +-- /var/run/docker.sock (Runner daemon only)
 ```
 
 GitLab Omnibus owns the application and its supporting services inside one persistent server container. This resembles a small enterprise installation while intentionally avoiding an external database, object storage, load balancer, or Kubernetes.
 
-The runner is isolated behind a Compose profile, so GitLab can run independently. For a production deployment, runners should be placed on separate hosts or virtual machines.
+The Jenkins Caddy container is the shared local TLS ingress: port `8444` routes to Jenkins and port `8445` routes to GitLab. Caddy keeps its CA private key in the Jenkins `caddy_data` volume and automatically manages both leaf certificates. GitLab serves HTTP only on the external `local-tooling-edge` Docker network and never receives the CA private key.
+
+The runner is isolated behind a Compose profile, so GitLab can run without a local runner. For a production deployment, runners should be placed on separate hosts or virtual machines.
 
 ---
 
@@ -87,14 +94,11 @@ The server version is pinned in `.env` rather than using `latest`. Pinning makes
 ├── README.md
 ├── scripts/
 │   ├── backup.sh
-│   ├── generate-certificate.sh
+│   ├── ensure-shared-network.sh
 │   └── register-runner.sh
-└── secrets/
-    └── ssl/
-        └── .gitkeep
 ```
 
-Generated local files such as `.env`, TLS certificates, private keys, and backup archives must not be committed.
+Generated local files such as `.env` and backup archives must not be committed. The Caddy root certificate is exported and maintained by the sibling Jenkins repository; its private key must remain in the Jenkins Caddy data volume.
 
 ---
 
@@ -106,6 +110,7 @@ Recommended environment:
 * Docker Compose v2
 * Git
 * OpenSSL
+* The sibling `jenkins-docker` repository with its Caddy root exported to `certs/caddy-local-root.crt`
 * At least 8 GB RAM allocated to the container runtime
 * At least 4 CPU cores and 20 GB of free disk space
 
@@ -121,7 +126,6 @@ openssl version
 Check that the default ports are available:
 
 ```bash
-lsof -nP -iTCP:80 -sTCP:LISTEN || true
 lsof -nP -iTCP:8445 -sTCP:LISTEN || true
 lsof -nP -iTCP:2222 -sTCP:LISTEN || true
 ```
@@ -149,12 +153,14 @@ GITLAB_BIND_ADDRESS=127.0.0.1
 GITLAB_HTTPS_PORT=8445
 GITLAB_SSH_PORT=2222
 GITLAB_TIMEZONE=Asia/Shanghai
+CADDY_ROOT_CA_PATH=../jenkins-docker/certs/caddy-local-root.crt
+TOOLING_EDGE_NETWORK=local-tooling-edge
 GITLAB_RUNNER_VERSION=alpine-v19.2.1
 DOCKER_LOG_MAX_SIZE=50m
 DOCKER_LOG_MAX_FILES=5
 ```
 
-The default browser URL is `https://apps.localmac.net:8445`. `GITLAB_BIND_ADDRESS=127.0.0.1` prevents access from other devices on the local network. Change the bind address deliberately only when LAN access is required and protected by an appropriate firewall.
+The default browser URL is `https://apps.localmac.net:8445`. The Jenkins Caddy Compose project binds HTTPS to `127.0.0.1`; this GitLab project uses `GITLAB_BIND_ADDRESS` only for SSH port `2222`. Change either binding deliberately only when LAN access is required and protected by an appropriate firewall.
 
 ### 5.2 Configure local name resolution
 
@@ -171,34 +177,39 @@ Verify resolution:
 ping -c 1 apps.localmac.net
 ```
 
-If `GITLAB_HOSTNAME` is changed, use the same hostname in `/etc/hosts` and regenerate the certificate.
+If `GITLAB_HOSTNAME` is changed, use the same hostname in `/etc/hosts` and in the Jenkins Caddyfile so Caddy can issue the correct leaf certificate.
 
-### 5.3 Generate and trust the TLS certificate
+### 5.3 Prepare the shared Caddy ingress
 
-Generate a self-signed certificate for the local lab:
+Confirm that the exported Caddy root exists:
 
 ```bash
-./scripts/generate-certificate.sh
+test -f ../jenkins-docker/certs/caddy-local-root.crt
+openssl x509 -in ../jenkins-docker/certs/caddy-local-root.crt \
+  -noout -subject -issuer -dates -fingerprint -sha256
 ```
 
-The script refuses to overwrite an existing certificate or key. Move or remove disposable generated files explicitly before regenerating them; never overwrite an organization-issued key by accident.
-
-Trust it in the macOS system keychain:
+Trust this root once if it is not already present in the macOS system keychain:
 
 ```bash
 sudo security add-trusted-cert -d -r trustRoot \
   -k /Library/Keychains/System.keychain \
-  secrets/ssl/apps.localmac.net.crt
+  ../jenkins-docker/certs/caddy-local-root.crt
 ```
 
-For shared internal use, replace the generated certificate and key with files issued by the organization's certificate authority. Their basename must match `GITLAB_HOSTNAME`, for example:
+Create the shared external network and recreate the Jenkins Caddy service so it listens on both HTTPS ports:
 
-```text
-secrets/ssl/gitlab.example.internal.crt
-secrets/ssl/gitlab.example.internal.key
+```bash
+./scripts/ensure-shared-network.sh
+
+cd ../jenkins-docker
+docker compose config --quiet
+docker compose up -d --no-deps caddy
+docker compose ps caddy
+cd ../gitlab-docker
 ```
 
-The private key must be unencrypted so GitLab NGINX can read it during startup. Never commit private keys. For an internet-accessible deployment, prefer public DNS, an edge reverse proxy, and an ACME-issued certificate.
+Caddy stores and rotates its root, intermediate, leaf certificates, and private keys in the Jenkins `caddy_data` volume. Do not copy the root private key into this repository or delete that volume during routine maintenance.
 
 ### 5.4 Validate and start GitLab
 
@@ -215,7 +226,7 @@ Initialization commonly takes several minutes. Follow the startup logs:
 docker compose logs -f gitlab
 ```
 
-Wait until `docker compose ps` reports the service as healthy.
+Wait until `docker compose ps` reports the service as healthy. GitLab does not publish its web port directly; Caddy reaches port `80` through `local-tooling-edge` and publishes HTTPS on host port `8445`.
 
 ### 5.5 Complete initial sign-in
 
@@ -263,7 +274,7 @@ Stop all services while preserving data:
 docker compose --profile runner down
 ```
 
-Do not add `--volumes` unless the installation is being permanently destroyed. Named volumes contain GitLab configuration, repositories, database data, logs, and runner configuration.
+This does not stop the shared Jenkins Caddy service. Do not add `--volumes` unless the installation is being permanently destroyed. Named volumes contain GitLab configuration, repositories, database data, logs, and runner configuration.
 
 ---
 
@@ -272,7 +283,9 @@ Do not add `--volumes` unless the installation is being permanently destroyed. N
 Check the HTTPS endpoint:
 
 ```bash
-curl --fail --show-error --head https://apps.localmac.net:8445/users/sign_in
+curl --cacert ../jenkins-docker/certs/caddy-local-root.crt \
+  --fail --show-error --head \
+  https://apps.localmac.net:8445/users/sign_in
 ```
 
 Inspect the certificate when troubleshooting trust or hostname problems:
@@ -304,7 +317,7 @@ docker compose --profile runner ps
 
 The script prompts for the token without echoing it, which keeps it out of shell history. Registration is persisted in the `runner-config` volume. Do not store runner tokens in `.env`, Compose YAML, Git, or CI job output.
 
-The Runner daemon uses the Docker socket to create job containers, but the socket is not mounted into job containers by default. Docker socket access remains effectively root-equivalent for the Runner daemon itself. Use it only for trusted lab projects. Jobs that must build container images should use a separate protected runner and an isolated builder such as rootless BuildKit or carefully secured Docker-in-Docker.
+The Runner daemon uses the Docker socket to create job containers on `local-tooling-edge`, allowing the helper container to resolve the shared Caddy endpoint. The socket is not mounted into job containers by default. Docker socket access remains effectively root-equivalent for the Runner daemon itself. Use it only for trusted lab projects. Jobs that must build container images should use a separate protected runner and an isolated builder such as rootless BuildKit or carefully secured Docker-in-Docker.
 
 ### 8.1 Minimal pipeline example
 
@@ -361,7 +374,7 @@ Run a backup before every upgrade:
 The script creates:
 
 * A GitLab application backup in `./backups`
-* A timestamped configuration archive containing `gitlab-secrets.json`, `gitlab.rb`, `.env`, `docker-compose.yml`, and TLS files
+* A timestamped configuration archive containing `gitlab-secrets.json`, `gitlab.rb`, `.env`, `docker-compose.yml`, and the public Caddy root certificate when available
 * A SHA-256 checksum file covering the application and configuration backups
 
 The secrets file is mandatory for decrypting stored credentials. Configuration archives contain private material and are created with restrictive permissions. Copy the backups and checksum file to encrypted off-host storage; a backup stored only beside the running system is not a disaster recovery plan.
@@ -475,7 +488,9 @@ docker compose config --quiet
 docker compose ps
 docker compose exec gitlab gitlab-ctl status
 docker compose exec gitlab gitlab-rake gitlab:check SANITIZE=true
-curl --fail --show-error --head https://apps.localmac.net:8445/users/sign_in
+curl --cacert ../jenkins-docker/certs/caddy-local-root.crt \
+  --fail --show-error --head \
+  https://apps.localmac.net:8445/users/sign_in
 ```
 
 Also verify manually:
@@ -504,32 +519,35 @@ docker stats --no-stream
 
 Confirm that the container runtime has at least 8 GB RAM and sufficient free disk space.
 
-### HTTPS certificate errors
+### HTTPS or Caddy errors
 
-Confirm that the configured hostname matches the certificate basename and subject alternative name:
-
-```bash
-grep '^GITLAB_HOSTNAME=' .env
-ls -l secrets/ssl
-openssl x509 -in secrets/ssl/apps.localmac.net.crt -noout -subject -ext subjectAltName
-```
-
-Regenerate the certificate after changing the hostname, then recreate GitLab:
+Confirm that the exported root matches the root currently persisted by Caddy:
 
 ```bash
-./scripts/generate-certificate.sh
-docker compose up -d --no-deps --force-recreate gitlab
+openssl x509 -in ../jenkins-docker/certs/caddy-local-root.crt \
+  -noout -subject -issuer -dates -fingerprint -sha256
+
+cd ../jenkins-docker
+docker compose logs --tail=200 caddy
 ```
+
+Confirm that Caddy and GitLab share the external network and that Caddy can resolve the GitLab alias:
+
+```bash
+docker network inspect local-tooling-edge
+docker compose exec caddy wget -qO- http://gitlab/-/readiness
+```
+
+Do not delete `caddy_data` as a first repair step. Doing so replaces the trusted local CA. Re-export and re-trust the root only after an intentional CA reset.
 
 ### A host port is already in use
 
 ```bash
-lsof -nP -iTCP:80 -sTCP:LISTEN
 lsof -nP -iTCP:8445 -sTCP:LISTEN
 lsof -nP -iTCP:2222 -sTCP:LISTEN
 ```
 
-Stop the conflicting service or update the corresponding value in `.env`. If HTTPS is moved, use the configured port in URLs.
+Port `8445` belongs to the Jenkins Caddy container, while `2222` belongs to GitLab. Stop the conflicting service or update both the relevant Compose/Caddy configuration and documented URL.
 
 ### Runner cannot connect to GitLab
 
@@ -539,7 +557,7 @@ docker compose exec runner gitlab-runner verify
 docker compose exec runner ls -l /etc/gitlab-runner/certs
 ```
 
-Confirm that the runner certificate matches `GITLAB_HOSTNAME` and that the runner is attached to the `gitlab-lab_gitlab` network.
+Confirm that the Runner mounts the exported Caddy root as `apps.localmac.net.crt` and is attached to both `gitlab-lab_gitlab` and `local-tooling-edge`.
 
 ### CI job cannot start Docker containers
 

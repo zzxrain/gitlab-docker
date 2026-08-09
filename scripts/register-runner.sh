@@ -25,10 +25,13 @@ read_env_value() {
 
 gitlab_hostname="$(read_env_value GITLAB_HOSTNAME apps.localmac.net)"
 gitlab_https_port="$(read_env_value GITLAB_HTTPS_PORT 8445)"
-certificate="secrets/ssl/${gitlab_hostname}.crt"
+caddy_root_ca_path="$(read_env_value CADDY_ROOT_CA_PATH ../jenkins-docker/certs/caddy-local-root.crt)"
+if [[ "$caddy_root_ca_path" != /* ]]; then
+  caddy_root_ca_path="$root_dir/$caddy_root_ca_path"
+fi
 
-if [[ ! -f "$certificate" ]]; then
-  printf 'Missing %s. Generate or install the TLS certificate first.\n' "$certificate" >&2
+if [[ ! -f "$caddy_root_ca_path" ]]; then
+  printf 'Missing Caddy root CA: %s\n' "$caddy_root_ca_path" >&2
   exit 1
 fi
 
@@ -46,7 +49,7 @@ docker compose exec -T runner register --non-interactive \
   --executor docker \
   --docker-image alpine:3.22 \
   --description "docker-runner" \
-  --docker-network-mode gitlab-lab_gitlab \
+  --docker-network-mode "$(read_env_value TOOLING_EDGE_NETWORK local-tooling-edge)" \
   --docker-pull-policy if-not-present
 
 unset runner_token
