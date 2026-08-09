@@ -56,7 +56,7 @@ GitLab CE (Omnibus) <--- SSH 2222 --- Git client
     +-- gitlab-config volume
     +-- gitlab-logs volume
     +-- gitlab-data volume
-    +-- ./backups
+    +-- $HOME/DevTools/Backup/gitlab-docker
 
 Optional GitLab Runner
     |
@@ -153,6 +153,7 @@ GITLAB_BIND_ADDRESS=127.0.0.1
 GITLAB_HTTPS_PORT=8445
 GITLAB_SSH_PORT=2222
 GITLAB_TIMEZONE=Asia/Shanghai
+GITLAB_BACKUP_DIR=${HOME}/DevTools/Backup/gitlab-docker
 CADDY_ROOT_CA_PATH=../jenkins-docker/certs/caddy-local-root.crt
 TOOLING_EDGE_NETWORK=local-tooling-edge
 GITLAB_RUNNER_VERSION=alpine-v19.2.1
@@ -383,11 +384,11 @@ Run a backup before every upgrade:
 
 The script creates:
 
-* A GitLab application backup in `./backups`
+* A GitLab application backup in `$HOME/DevTools/Backup/gitlab-docker`
 * A timestamped configuration archive containing `gitlab-secrets.json`, `gitlab.rb`, `.env`, `docker-compose.yml`, and the public Caddy root certificate when available
 * A SHA-256 checksum file covering the application and configuration backups
 
-The secrets file is mandatory for decrypting stored credentials. Configuration archives contain private material and are created with restrictive permissions. Copy the backups and checksum file to encrypted off-host storage; a backup stored only beside the running system is not a disaster recovery plan.
+On this macOS host, the default destination resolves to `/Users/pandahorn/DevTools/Backup/gitlab-docker`. Override `GITLAB_BACKUP_DIR` in `.env` when another external location is required. The secrets file is mandatory for decrypting stored credentials. Configuration archives contain private material and are created with restrictive permissions. Copy the backups and checksum file to encrypted off-host storage; a backup stored only on the same machine is not a disaster recovery plan.
 
 ### 10.2 Restore GitLab
 
@@ -395,7 +396,7 @@ Restore an application backup only into the exact same GitLab version that creat
 
 1. Set `GITLAB_VERSION` to the original exact version and start GitLab.
 2. Restore `gitlab-secrets.json` and `gitlab.rb` when recovering onto new volumes.
-3. Place the numeric `*_gitlab_backup.tar` file in `./backups`.
+3. Place the numeric `*_gitlab_backup.tar` file in `$GITLAB_BACKUP_DIR`.
 4. Stop the application processes and restore the backup:
 
 ```bash

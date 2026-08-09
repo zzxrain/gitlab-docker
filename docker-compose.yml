@@ -32,7 +32,7 @@ services:
       - gitlab-config:/etc/gitlab
       - gitlab-logs:/var/log/gitlab
       - gitlab-data:/var/opt/gitlab
-      - ./backups:/var/opt/gitlab/backups
+      - ${GITLAB_BACKUP_DIR:?Set GITLAB_BACKUP_DIR in .env}:/var/opt/gitlab/backups
     healthcheck:
       test: ["CMD", "/opt/gitlab/bin/gitlab-healthcheck", "--fail", "--max-time", "10"]
       interval: 30s
