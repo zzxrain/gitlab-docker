@@ -557,7 +557,7 @@ docker compose exec runner gitlab-runner verify
 docker compose exec runner ls -l /etc/gitlab-runner/certs
 ```
 
-Confirm that the Runner mounts the exported Caddy root as `apps.localmac.net.crt` and is attached to both `gitlab-lab_gitlab` and `local-tooling-edge`.
+Confirm that the Runner mounts the exported Caddy root as `apps.localmac.net.crt` and is attached to both `gitlab-docker_gitlab` and `local-tooling-edge`.
 
 ### CI job cannot start Docker containers
 
