@@ -1,0 +1,64 @@
+name: gitlab-lab
+
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:${GITLAB_VERSION:?Copy .env.example to .env}
+    # GitLab's official image is amd64; OrbStack transparently emulates it on Apple Silicon.
+    platform: linux/amd64
+    hostname: ${GITLAB_HOSTNAME:-gitlab.local}
+    restart: unless-stopped
+    shm_size: 256m
+    environment:
+      TZ: ${GITLAB_TIMEZONE:-UTC}
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'https://${GITLAB_HOSTNAME:-gitlab.local}:${GITLAB_HTTPS_PORT:-443}'
+        gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_SSH_PORT:-2222}
+        nginx['redirect_http_to_https'] = true
+        nginx['ssl_certificate'] = '/etc/gitlab/ssl/${GITLAB_HOSTNAME:-gitlab.local}.crt'
+        nginx['ssl_certificate_key'] = '/etc/gitlab/ssl/${GITLAB_HOSTNAME:-gitlab.local}.key'
+        letsencrypt['enable'] = false
+        gitlab_rails['backup_keep_time'] = 604800
+        prometheus_monitoring['enable'] = true
+    ports:
+      - "80:80"
+      - "${GITLAB_HTTPS_PORT:-443}:${GITLAB_HTTPS_PORT:-443}"
+      - "${GITLAB_SSH_PORT:-2222}:22"
+    volumes:
+      - gitlab-config:/etc/gitlab
+      - gitlab-logs:/var/log/gitlab
+      - gitlab-data:/var/opt/gitlab
+      - ./secrets/ssl:/etc/gitlab/ssl:ro
+      - ./backups:/var/opt/gitlab/backups
+    healthcheck:
+      test: ["CMD", "/opt/gitlab/bin/gitlab-healthcheck", "--fail", "--max-time", "10"]
+      interval: 30s
+      timeout: 15s
+      retries: 20
+      start_period: 10m
+    networks:
+      - gitlab
+
+  runner:
+    image: gitlab/gitlab-runner:${GITLAB_RUNNER_VERSION:-alpine-v18.3.1}
+    restart: unless-stopped
+    depends_on:
+      gitlab:
+        condition: service_healthy
+    volumes:
+      - runner-config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./secrets/ssl/${GITLAB_HOSTNAME:-gitlab.local}.crt:/etc/gitlab-runner/certs/${GITLAB_HOSTNAME:-gitlab.local}.crt:ro
+    networks:
+      - gitlab
+    profiles: ["runner"]
+
+networks:
+  gitlab:
+    driver: bridge
+
+volumes:
+  gitlab-config:
+  gitlab-logs:
+  gitlab-data:
+  runner-config:
+
