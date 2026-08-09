@@ -10,7 +10,7 @@ services:
   gitlab:
     image: gitlab/gitlab-ce:${GITLAB_VERSION:?Copy .env.example to .env}
     hostname: ${GITLAB_HOSTNAME:-apps.localmac.net}
-    restart: unless-stopped
+    restart: "no"
     stop_grace_period: 1m
     shm_size: 256m
     logging: *default-logging
@@ -47,7 +47,7 @@ services:
 
   runner:
     image: gitlab/gitlab-runner:${GITLAB_RUNNER_VERSION:-alpine-v19.2.1}
-    restart: unless-stopped
+    restart: "no"
     init: true
     logging: *default-logging
     depends_on:
